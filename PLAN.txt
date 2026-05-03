@@ -1,0 +1,166 @@
+SupplyMind — 3-Day Action Plan
+================================
+
+PROJECT OVERVIEW
+----------------
+Build an inventory management system using a RAG pipeline with ReAct agents.
+
+Core problem: When stock drops below threshold, the system:
+  1. Alerts that a restock is needed
+  2. Fetches quotes from available vendors
+  3. Ranks and recommends the best option
+  4. Drafts a Purchase Order
+
+Tech stack:
+  - LangGraph         (agent orchestration, supervisor graph)
+  - LangChain Anthropic (LLM calls)
+  - SQLAlchemy + SQLite (inventory database)
+  - ChromaDB          (vector store for RAG)
+  - MCP               (expose DB tools to external clients)
+  - A2A               (agent-to-agent communication protocol)
+
+
+ARCHITECTURE
+------------
+
+  User / CLI
+      |
+      v
+  LangGraph Supervisor Graph
+      |-- InventoryMonitor Agent   <-- written by developer
+      |       |__ Tools: check_stock, get_consumption_history
+      |
+      |-- VendorAdvisor Agent      <-- written by developer
+              |__ Tools: get_quotes, rank_vendors, recommend_order
+                           |
+                           v
+                     MCP Server (exposes DB as tools to external clients)
+                           |
+                           v
+                     A2A: VendorAdvisor <-> external PriceBot agent
+
+RAG layer sits underneath — semantic search over item + supplier descriptions.
+
+
+THE 2 AGENTS (written by the developer)
+----------------------------------------
+
+Agent 1 — InventoryMonitor  (Day 1, simpler)
+  - Input   : none (pulls from DB itself)
+  - Location: graph/inventory_agent.py
+  - ReAct loop:
+      1. call check_stock_levels
+      2. if below threshold -> call get_consumption_velocity
+      3. compute days-to-stockout
+      4. emit structured alert
+  - Key learning: how tools feed back into agent reasoning
+
+Agent 2 — VendorAdvisor  (Day 2, more complex)
+  - Input   : item_id + quantity_needed (from InventoryMonitor alert)
+  - Location: graph/vendor_agent.py
+  - ReAct loop:
+      1. call get_supplier_quotes
+      2. call rank_vendors
+      3. optionally call RAG search for historical context
+      4. output recommendation dict
+  - Key learning: multi-tool chaining, structured output, agent handoff
+
+
+MODULE MAP
+----------
+
+  supplymind/
+  |-- db/
+  |   |-- models.py            [DONE] SQLAlchemy models
+  |   |__ seed.py              [Day 1] seed 10 items, 3 suppliers, consumption history
+  |
+  |-- tools/
+  |   |-- inventory.py         [Day 1] check_stock, get_consumption_velocity, get_supplier_quotes
+  |   |__ po.py                [Day 3] generate_po_draft tool
+  |
+  |-- skills/
+  |   |-- rag.py               [Day 1 + Day 3] embed descriptions, retrieval-augmented queries
+  |   |__ reorder.py           [Day 2] reorder quantity recommendation skill
+  |
+  |-- graph/
+  |   |-- inventory_agent.py   [Day 1] YOU write this
+  |   |-- vendor_agent.py      [Day 2] YOU write this
+  |   |__ supervisor.py        [Day 2] routes alerts between agents
+  |
+  |-- mcp/
+  |   |-- server.py            [Day 2] MCP server exposing check_stock, get_quotes, list_suppliers
+  |   |__ config.json          [Day 2] Claude Desktop integration config
+  |
+  |-- a2a/
+  |   |-- server.py            [Day 3] VendorAdvisor A2A endpoint
+  |   |__ vendor_client.py     [Day 3] InventoryMonitor calls VendorAdvisor via A2A
+  |
+  |__ main.py                  [Day 3] CLI entry: python main.py --check
+
+
+DAY-BY-DAY PLAN
+----------------
+
+DAY 1 — Data, Tools, and First Agent
+  Goal: Working ReAct agent that detects low stock and explains why.
+
+  1. [Claude]     db/seed.py          — seed DB with 10 items, 3 suppliers, consumption history
+  2. [Claude]     tools/inventory.py  — check_stock_levels, get_consumption_velocity, get_supplier_quotes
+  3. [Developer]  graph/inventory_agent.py — InventoryMonitor ReAct agent
+  4. [Claude]     skills/rag.py       — embed item + supplier descriptions into ChromaDB
+  5. [Both]       smoke test          — run agent, verify alert fires correctly
+
+  Target output:
+    "SKU-42 has 8 units left (threshold: 20).
+     At current velocity of 4/day, stockout in ~2 days."
+
+
+DAY 2 — Second Agent, Skills, MCP
+  Goal: Vendor comparison + MCP server so any client can query inventory.
+
+  1. [Developer]  graph/vendor_agent.py  — VendorAdvisor ReAct agent
+  2. [Claude]     skills/reorder.py      — reusable reorder quantity skill
+  3. [Claude]     graph/supervisor.py    — LangGraph supervisor routing alerts to VendorAdvisor
+  4. [Claude]     mcp/server.py          — MCP server with 3 exposed tools
+  5. [Both]       wire MCP into Claude Desktop config
+
+  Target output:
+    "Best option: SupplierA at $4.20/unit, 3-day lead time.
+     Recommended order: 200 units."
+
+
+DAY 3 — A2A, RAG Polish, Final Demo
+  Goal: Two agents talking via A2A; clean runnable demo from CLI.
+
+  1. [Claude]     a2a/server.py + a2a/vendor_client.py — A2A communication layer
+  2. [Claude]     skills/rag.py (update) — retrieval-augmented vendor recommendation
+  3. [Claude]     tools/po.py            — generate_po_draft producing Purchase Order JSON
+  4. [Both]       main.py               — clean CLI entry point
+  5. [Claude]     README.md             — setup instructions + sample run output
+
+  Target output:
+    Full pipeline from single command:
+      stock check -> alert -> vendor comparison -> PO draft JSON
+
+
+CONCEPTS COVERED
+----------------
+  - ReAct Agents    : Reason + Act loop, tools feed back into agent reasoning
+  - Agent Tools     : @tool decorated functions (check_stock, get_quotes, rank_vendors)
+  - Skills          : Reusable prompt + tool compositions (reorder skill, RAG skill)
+  - MCP             : Model Context Protocol server exposing DB tools to any client
+  - A2A             : Agent-to-Agent protocol, agents call each other by name not import
+  - LangGraph       : StateGraph with supervisor routing between multiple agents
+  - RAG Pipeline    : ChromaDB vector store, semantic search over item/supplier descriptions
+
+
+SETUP (to do before Day 1)
+---------------------------
+  1. Add to pyproject.toml dependencies:
+       chromadb>=0.4
+       langchain-community>=0.2
+
+  2. Run: uv sync
+
+  3. Create .env with:
+       ANTHROPIC_API_KEY=your_key_here
