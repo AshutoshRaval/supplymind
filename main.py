@@ -1,6 +1,6 @@
 from db.seed import seed
 from skills.rag import embed_inventory
-from graph.inventory_agent import run_inventory_monitor
+from graph.supervisor import run_supervisor
 
 
 def main():
@@ -12,10 +12,9 @@ def main():
     print("[2/3] Embedding inventory into ChromaDB...")
     embed_inventory()
 
-    print("[3/3] Running Inventory Monitor Agent...\n")
-    report = run_inventory_monitor()
+    print("[3/3] Running Supervisor...\n")
+    report = run_supervisor()
 
-    print("=== AGENT REPORT ===")
     print(report)
 
 

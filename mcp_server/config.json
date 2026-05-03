@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "supplymind": {
+      "command": "uv",
+      "args": ["run", "python", "mcp_server/server.py"],
+      "cwd": "/Users/ashutoshraval/supplymind"
+    }
+  }
+}
