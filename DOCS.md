@@ -11,7 +11,9 @@
 8. [Supervisor](#8-supervisor)
 9. [MCP Server](#9-mcp-server)
 10. [Testing](#10-testing)
-11. [Key Concepts Explained](#11-key-concepts-explained)
+11. [Failure Handling](#11-failure-handling)
+12. [Evaluation](#12-evaluation)
+13. [Key Concepts Explained](#13-key-concepts-explained)
 
 ---
 
@@ -421,7 +423,143 @@ uv run pytest tests/ -v
 
 ---
 
-## 11. Key Concepts Explained
+## 11. Failure Handling
+
+3 layers of protection across the entire pipeline.
+
+### Layer 1 — Tool Level (`tools/inventory.py`)
+Every tool is wrapped in `try/except`. Instead of crashing, tools return an error dict:
+```python
+try:
+    # normal DB logic
+except Exception as e:
+    return {"error": f"tool_name failed: {str(e)}"}
+```
+When a tool returns an error dict, the agent reads it and reasons around it — tries a different approach instead of crashing.
+
+### Layer 2 — Agent Level (`graph/inventory_agent.py`, `graph/vendor_agent.py`)
+Retry loop wraps every `agent.invoke()` call:
+```python
+def run_inventory_monitor(retries=3) -> str:
+    for attempt in range(retries):
+        try:
+            result = agent.invoke(...)
+            return result["messages"][-1].content
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"[Attempt {attempt + 1} failed] {e}. Retrying in 2s...")
+                time.sleep(2)
+            else:
+                return f"Agent failed after {retries} attempts: {str(e)}"
+```
+Handles: API timeouts, rate limits, network drops.
+
+### Layer 3 — LangGraph Level
+```python
+config={"recursion_limit": 20}
+```
+Passed into `agent.invoke()`. LangGraph counts every step in the ReAct loop. If the agent calls more than 20 tools without finishing, LangGraph force-stops it — which Layer 2 then catches and retries.
+
+### Summary
+```
+Tool crashes      → returns error dict  → agent reasons around it
+API timeout       → retry (3 attempts, 2s sleep between)
+Agent loops forever → recursion_limit=20 → force stop → retry
+```
+
+---
+
+## 12. Evaluation
+
+**File:** `evaluation/eval.py`
+
+Uses **DeepEval** — industry standard open source LLM evaluation framework.
+Pattern: **LLM-as-a-Judge** — Claude Haiku evaluates Claude's output.
+
+### How to Run
+```bash
+# normal run
+uv run python main.py
+
+# run with evaluation
+uv run python main.py --evaluate
+```
+
+### ClaudeJudge
+DeepEval defaults to OpenAI. We wrap Claude Haiku as a custom judge:
+```python
+class ClaudeJudge(DeepEvalBaseLLM):
+    def generate(self, prompt: str) -> str:
+        response = Anthropic().messages.create(
+            model="claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+```
+
+### Retrieval Context (Ground Truth)
+Real DB data pulled before evaluation runs:
+```python
+context = [
+    "Coffee Pods (SKU: COF-009): stock=5, threshold=15",
+    "QuickSupply Co: rating=4.5, lead_time=3 days, price=22.0",
+    ...
+]
+```
+Faithfulness metric checks agent output against this context.
+
+### 3 GEval Metrics
+
+**Metric 1 — Answer Relevancy**
+```
+Verified against: Input question
+Checks: Did the agent answer what was asked?
+Fails if: Output is off-topic or vague
+```
+
+**Metric 2 — Faithfulness**
+```
+Verified against: Retrieval context (real DB data)
+Checks: Did agent hallucinate prices or supplier names?
+Fails if: Output contradicts the DB context
+```
+
+**Metric 3 — Business Rules Compliance**
+```
+Verified against: Domain criteria we defined
+Checks:
+  - CRITICAL items flagged correctly
+  - Lead time > stockout warned
+  - Every item has supplier + price + quantity
+  - CRITICAL items appear before HIGH
+Fails if: Any rule is violated
+```
+
+### What GEval Is
+GEval does NOT compare against a pre-computed expected answer.
+Claude Haiku reads the output and judges it against criteria — like a human reviewer would.
+
+```
+Traditional test:  expected == actual  (exact match)
+GEval:             Claude reads output and scores criteria (opinion)
+```
+
+For exact numerical verification, use pytest unit tests.
+For qualitative output quality, use GEval.
+
+### Sample Output
+```
+Answer Relevancy [GEval]:          100.00% pass rate
+Faithfulness [GEval]:              100.00% pass rate
+Business Rules Compliance [GEval]: 100.00% pass rate
+
+✓ Evaluation completed! (time taken: 19.7s)
+  Pass Rate: 100.0% | Passed: 1 | Failed: 0
+```
+
+---
+
+## 13. Key Concepts Explained
 
 ### ReAct = Reason + Act
 ```
