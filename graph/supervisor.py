@@ -9,7 +9,7 @@ Flow:
 """
 
 from tools.inventory import get_low_stock_summary
-from graph.vendor_agent import run_vendor_advisor
+from a2a.client import call_vendor_advisor
 
 
 def run_supervisor() -> str:
@@ -36,7 +36,7 @@ def run_supervisor() -> str:
     for item in urgent_items:
         print(f"[Supervisor] → Getting recommendation for {item['name']} ({item['urgency']})")
 
-        recommendation = run_vendor_advisor(
+        recommendation = call_vendor_advisor(
             item_id=item["item_id"],
             urgency=item["urgency"],
             days_to_stockout=item["days_to_stockout"] or 0,

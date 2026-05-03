@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from tools.inventory import get_supplier_quotes, get_best_supplier                                                             
 from skills.reorder import calculate_reorder_quantity
 from skills.rag import search_inventory                                                                                        
+from tools.po import generate_po_draft
                                                                                                                                  
 load_dotenv()
 
@@ -14,6 +15,7 @@ tools = [
       get_best_supplier,                                                                                                         
       calculate_reorder_quantity,                                                                                                
       search_inventory,
+      generate_po_draft,
   ]    
 
 
@@ -26,7 +28,8 @@ system_prompt = """
   1. Call get_supplier_quotes to see all available vendors for the item                                                          
   2. Call get_best_supplier to get the top recommendation                                                                        
   3. Call calculate_reorder_quantity using the best supplier's lead_time_days
-  4. Present a complete procurement recommendation with:                                                                         
+  4. Call generate_po_draft with the item details, supplier, quantity, and price
+  5. Present a complete procurement recommendation with:                                                                         
      - Item name and SKU                                                                                                         
      - Recommended supplier, price per unit, and lead time                                                                       
      - Exact quantity to order                                                                                                   
