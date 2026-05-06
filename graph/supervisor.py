@@ -12,36 +12,32 @@ from tools.inventory import get_low_stock_summary
 from a2a.client import call_vendor_advisor
 
 
-def run_supervisor() -> str:
+def get_recommendations() -> list[dict]:
+    """Return structured recommendations for each urgent item."""
     print("[Supervisor] Step 1: Scanning inventory for low stock items...")
     flagged_items = get_low_stock_summary.invoke({})
 
-    # check if tool returned an error
     if flagged_items and "error" in flagged_items[0]:
-        return f"Supervisor failed at inventory scan: {flagged_items[0]['error']}"
+        return []
 
-    # filter only CRITICAL and HIGH — ignore MEDIUM and LOW
     urgent_items = [
         item for item in flagged_items
         if item["urgency"] in ("CRITICAL", "HIGH")
     ]
 
     if not urgent_items:
-        return "All inventory levels are healthy. No restocking needed."
+        return []
 
     print(f"[Supervisor] Found {len(urgent_items)} urgent items. Calling VendorAdvisor...")
 
     recommendations = []
-
     for item in urgent_items:
         print(f"[Supervisor] → Getting recommendation for {item['name']} ({item['urgency']})")
-
         recommendation = call_vendor_advisor(
             item_id=item["item_id"],
             urgency=item["urgency"],
             days_to_stockout=item["days_to_stockout"] or 0,
         )
-
         recommendations.append({
             "item_name": item["name"],
             "sku": item["sku"],
@@ -50,6 +46,13 @@ def run_supervisor() -> str:
             "recommendation": recommendation,
         })
 
+    return recommendations
+
+
+def run_supervisor() -> str:
+    recommendations = get_recommendations()
+    if not recommendations:
+        return "All inventory levels are healthy. No restocking needed."
     return _build_final_report(recommendations)
 
 
