@@ -14,6 +14,12 @@
 11. [Failure Handling](#11-failure-handling)
 12. [Evaluation](#12-evaluation)
 13. [Key Concepts Explained](#13-key-concepts-explained)
+14. [A2A Protocol](#14-a2a-protocol)
+15. [PO Draft Tool](#15-po-draft-tool)
+16. [FastAPI Backend](#16-fastapi-backend)
+17. [React Frontend](#17-react-frontend)
+18. [Full System Architecture](#18-full-system-architecture)
+19. [Resume Summary](#19-resume-summary)
 
 ---
 
@@ -604,3 +610,305 @@ HTTP request instead of Python call:
   {"item_id": 2, "urgency": "HIGH"}
 Agents can be on different machines, different languages.
 ```
+
+---
+
+## 14. A2A Protocol
+
+### What It Is
+A2A (Agent-to-Agent) is an HTTP-based communication pattern where agents talk to each other as independent services instead of direct Python function calls.
+
+### Before A2A (Day 2)
+```
+Supervisor → run_vendor_advisor()   # direct Python function call
+                                    # both agents in same process
+```
+
+### After A2A (Day 3)
+```
+Supervisor (Process 1)
+    │
+    │  POST http://localhost:8001/recommend
+    │  {"item_id": 2, "urgency": "HIGH", "days_to_stockout": 5.0}
+    ▼
+VendorAdvisor Server (Process 2)
+    │
+    │  runs agent, returns result
+    ▼
+    {"recommendation": "Order 500 units from QuickSupply Co..."}
+```
+
+### Files
+```
+a2a/server.py   → FastAPI app exposing VendorAdvisor at POST /recommend
+a2a/client.py   → httpx client used by Supervisor to call the server
+```
+
+### server.py
+```python
+@app.post("/recommend")
+def recommend(req: RecommendRequest) -> RecommendResponse:
+    result = run_vendor_advisor(
+        item_id=req.item_id,
+        urgency=req.urgency,
+        days_to_stockout=req.days_to_stockout,
+    )
+    return RecommendResponse(recommendation=result)
+```
+
+### client.py
+```python
+def call_vendor_advisor(item_id, urgency, days_to_stockout) -> str:
+    response = httpx.post("http://localhost:8001/recommend", json={...})
+    return response.json()["recommendation"]
+```
+
+### Why A2A matters
+```
+Day 2 (Python call)   → tightly coupled, same codebase, same machine
+Day 3 (A2A HTTP)      → loosely coupled, independent services
+                         VendorAdvisor can run on a different server
+                         Multiple supervisors can call it simultaneously
+```
+
+### Run the A2A server
+```bash
+PYTHONPATH=$(pwd) uv run uvicorn a2a.server:app --port 8001 --reload
+```
+
+---
+
+## 15. PO Draft Tool
+
+### What It Does
+`generate_po_draft()` is a `@tool` that takes vendor recommendation details and formats them into a structured Purchase Order document.
+
+### File
+```
+tools/po.py
+```
+
+### Inputs
+```python
+item_name: str        # name of the inventory item
+sku: str              # stock keeping unit code
+supplier_name: str    # chosen supplier
+quantity: int         # units to order
+price_per_unit: float # cost per unit
+lead_time_days: int   # delivery time
+urgency: str          # CRITICAL or HIGH
+```
+
+### What It Generates
+```
+========================================
+PURCHASE ORDER — PO-20260503-COF-009
+========================================
+Date        : 2026-05-03
+Urgency     : CRITICAL
+
+ITEM
+  Name      : Coffee Pods
+  SKU       : COF-009
+  Quantity  : 31 units
+
+SUPPLIER
+  Name      : QuickSupply Co
+  Unit Price: $22.00
+  Total Cost: $682.00
+  Lead Time : 3 days
+  Est. Arrival: 2026-05-06
+
+========================================
+STATUS: DRAFT — Awaiting Approval
+========================================
+```
+
+### Who Calls It
+VendorAdvisor agent calls it as the final step after:
+1. `get_supplier_quotes()` — find all suppliers
+2. `get_best_supplier()` — pick the best one
+3. `calculate_reorder_quantity()` — how many to order
+4. `generate_po_draft()` — format the PO
+
+---
+
+## 16. FastAPI Backend
+
+### What It Does
+Acts as the bridge between the React frontend and the agent pipeline.
+
+### File
+```
+api/server.py
+```
+
+### Endpoints
+```
+GET  /api/stock    → all inventory items with CRITICAL/HIGH/OK status
+GET  /api/flagged  → only CRITICAL and HIGH urgency items
+POST /api/analyze  → runs full multi-agent pipeline, returns structured JSON
+```
+
+### /api/analyze response
+```json
+{
+  "critical": [
+    {
+      "item_name": "Coffee Pods",
+      "sku": "COF-009",
+      "urgency": "CRITICAL",
+      "days_to_stockout": 2.7,
+      "recommendation": "..."
+    }
+  ],
+  "high": [...],
+  "total": 6
+}
+```
+
+### CORS
+Configured to allow requests from React dev server at `http://localhost:5173`.
+
+### Run
+```bash
+PYTHONPATH=$(pwd) uv run uvicorn api.server:app --port 8000 --reload
+```
+
+---
+
+## 17. React Frontend
+
+### What It Does
+A white and blue enterprise-style dashboard that visualises inventory data and triggers the AI agent pipeline.
+
+### File
+```
+frontend/src/App.jsx
+```
+
+### Pages
+```
+Overview   → KPI cards + flagged items horizontal scroll + full inventory table
+Analysis   → Run Analysis button + structured procurement report cards
+About      → Project description, agent breakdown, architecture, tech stack
+```
+
+### Key Features
+- KPI cards: Total SKUs, Critical, High Priority, Healthy counts
+- Flagged items as horizontal scrollable cards (color coded)
+- Full inventory table with status badges
+- Run Analysis button triggers POST /api/analyze
+- Spinner + pulsing step indicators while agents are running
+- Procurement report rendered as structured UI cards (not raw text)
+  - Markdown parsed into sections: Item Details, Supplier, Order Details, Reasoning
+  - Alert banner for CRITICAL lead time risk warnings
+  - KV grid cards for each data point
+
+### Run
+```bash
+cd frontend && npm run dev   # runs at http://localhost:5173
+```
+
+### Tech
+```
+React 18 + Vite   → frontend framework and dev server
+fetch API         → calls FastAPI backend at localhost:8000
+inline styles     → no CSS framework dependency
+```
+
+---
+
+## 18. Full System Architecture
+
+### All components and how they connect
+
+```
+Browser (localhost:5173)
+    │
+    │  HTTP fetch
+    ▼
+FastAPI Backend (localhost:8000)          api/server.py
+    │  GET /api/stock
+    │  GET /api/flagged   → SQLite DB (direct query)
+    │
+    │  POST /api/analyze  → get_recommendations()
+    ▼
+Supervisor (graph/supervisor.py)
+    │
+    │  get_low_stock_summary() → SQLite (direct tool call)
+    │
+    │  POST /recommend (A2A HTTP)
+    ▼
+VendorAdvisor A2A Server (localhost:8001)   a2a/server.py
+    │
+    │  run_vendor_advisor()
+    ▼
+VendorAdvisor Agent (graph/vendor_agent.py)
+    ├── get_supplier_quotes()        → SQLite
+    ├── get_best_supplier()          → SQLite
+    ├── calculate_reorder_quantity() → SQLite
+    ├── search_inventory()           → ChromaDB (RAG)
+    └── generate_po_draft()          → formats PO document
+
+MCP Server (stdio)                          mcp_server/server.py
+    ├── check_stock()                → SQLite
+    ├── get_quotes()                 → SQLite
+    ├── list_suppliers()             → SQLite
+    └── run_inventory_check()        → full agent pipeline
+    (called by Claude Desktop / Cursor IDE)
+```
+
+### 3 Servers running in production
+```
+Port 8000  → FastAPI backend    (React UI calls this)
+Port 8001  → A2A server         (Supervisor calls this internally)
+Port 5173  → React dev server   (browser)
+stdio      → MCP server         (Claude Desktop / Cursor)
+```
+
+---
+
+## 19. Resume Summary
+
+### What Was Built
+SupplyMind is an AI-powered inventory management system with a multi-agent architecture. When stock drops below threshold the system detects stockout risk, compares suppliers, computes reorder quantities with safety buffers, and generates purchase orders — fully automated.
+
+### Agents (3)
+```
+InventoryMonitor  → detects stockout risk, classifies CRITICAL/HIGH
+VendorAdvisor     → picks supplier, computes quantity, drafts PO
+Supervisor        → orchestrates both agents
+```
+
+### Tools (8 LangChain @tool + 4 MCP tools)
+```
+check_stock_levels, get_consumption_velocity, get_supplier_quotes,
+get_low_stock_summary, get_best_supplier, calculate_reorder_quantity,
+search_inventory, generate_po_draft
+```
+
+### Key Technical Concepts Used
+```
+ReAct agent loop          → Reason + Act pattern via LangGraph
+RAG pipeline              → dual retrieval: SQL (exact) + ChromaDB (semantic)
+Multi-agent orchestration → Supervisor pattern
+A2A protocol              → HTTP-based agent-to-agent communication
+MCP server                → external tool exposure via Model Context Protocol
+LLM-as-Judge evaluation   → DeepEval GEval with Claude Haiku as judge
+Failure handling          → 3 layers: tool try/except, agent retry, recursion_limit
+```
+
+### Evaluation Results
+```
+Answer Relevancy:          100% pass rate
+Faithfulness:              100% pass rate
+Business Rules Compliance: 100% pass rate
+```
+
+### Resume Bullets
+**Bullet 1 — RAG:**
+Developed a RAG-based inventory intelligence pipeline achieving 100% pass rate across Answer Relevancy, Faithfulness, and Business Rules Compliance metrics, by implementing a dual-retrieval system combining structured SQL queries with ChromaDB semantic vector search, validated using an LLM-as-Judge evaluation framework powered by Claude Haiku.
+
+**Bullet 2 — Agents:**
+Created a multi-agent workflow with ReAct reasoning, supervisor orchestration, and agent-to-agent (A2A) communication, reducing inventory procurement decision time by automating vendor selection, reorder quantity forecasting, and purchase order generation across a 3-supplier, 10-SKU system.
